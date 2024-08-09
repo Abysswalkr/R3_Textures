@@ -1,42 +1,37 @@
-
 import struct
 
 class Texture(object):
-	def __init__(self, filename):
+    def __init__(self, path):
+        self.path = path
+        self.load()
 
-		with open(filename, "rb") as image:
-			image.seek(10)
-			headerSize = struct.unpack('=l', image.read(4))[0]
+    def load(self):
+        with open(self.path, "rb") as image:
+            image.seek(10)
+            header_size = struct.unpack("=l", image.read(4))[0]
 
-			image.seek(18)
-			self.width = struct.unpack('=l', image.read(4))[0]
-			self.height = struct.unpack('=l', image.read(4))[0]
+            image.seek(18)
+            self.width = struct.unpack("=l", image.read(4))[0]
+            self.height = struct.unpack("=l", image.read(4))[0]
 
-			image.seek(headerSize)
+            image.seek(header_size)
 
-			self.pixels = []
+            self.pixels = []
 
-			for y in range(self.height):
-				pixelRow = []
+            for y in range(self.height):
+                row = []
+                for x in range(self.width):
+                    b = ord(image.read(1)) / 255
+                    g = ord(image.read(1)) / 255
+                    r = ord(image.read(1)) / 255
+                    row.append((r, g, b))
+                self.pixels.append(row)
 
-				for x in range(self.width):
-					b = ord(image.read(1)) / 255
-					g = ord(image.read(1)) / 255
-					r = ord(image.read(1)) / 255
-					pixelRow.append([r,g,b])
+    def getColor(self, u, v):
+        u = max(0, min(1, u))
+        v = max(0, min(1, v))
 
-				self.pixels.append(pixelRow)
+        x = int(u * (self.width - 1))
+        y = int(v * (self.height - 1))
 
-	def getColor(self, u, v):
-		if 0 <= u < 1 and 0 <= v < 1:
-			return self.pixels[int(v * self.height)][int(u * self.width)]
-		else:
-			return None
-
-
-
-
-
-
-
-
+        return self.pixels[y][x]
