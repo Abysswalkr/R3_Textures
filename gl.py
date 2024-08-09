@@ -1,420 +1,143 @@
 import struct
 from camera import Camera
-import numpy as np
-from math import tan, pi, isclose
-from MathLib import barycentricCoords
+from math import tan, pi
+from MathLib import barycentricCoords, matrix_vector_mult
+from model import Model
+from texture import Texture
 
 def char(c):
-	# 1 byte
-	return struct.pack("=c", c.encode("ascii"))
+    return struct.pack("=c", c.encode("ascii"))
 
 def word(w):
-	# 2 bytes
-	return struct.pack("=h", w)
+    return struct.pack("=h", w)
 
 def dword(d):
-	# 4 bytes
-	return struct.pack("=l", d)
-
+    return struct.pack("=l", d)
 
 POINTS = 0
 LINES = 1
 TRIANGLES = 2
 
-
 class Renderer(object):
-	def __init__(self, screen):
-		
-		self.screen = screen
-		_, _, self.width, self.height = screen.get_rect()
-		
-		self.camera = Camera()
-		self.glViewport(0,0, self.width, self.height)
-		self.glProjection()
-		
-		self.glColor(1,1,1)
-		self.glClearColor(0,0,0)
-		self.glClear()
-		
-		self.vertexShader = None
-		self.fragmentShader = None
-		
-		self.primitiveType = TRIANGLES
-		
-		self.models = []
+    def __init__(self, screen):
+        self.screen = screen
+        _, _, self.width, self.height = screen.get_rect()
+        self.camera = Camera()
+        self.glViewport(0, 0, self.width, self.height)
+        self.glProjection()
+        self.glColor(1, 1, 1)
+        self.glClearColor(0, 0, 0)
+        self.glClear()
+        self.vertexShader = None
+        self.fragmentShader = None
+        self.primitiveType = TRIANGLES
+        self.models = []
+        self.textures = []
 
+    def glViewport(self, x, y, width, height):
+        self.vpX = int(x)
+        self.vpY = int(y)
+        self.vpWidth = width
+        self.vpHeight = height
+        self.viewportMatrix = [
+            [width / 2, 0, 0, x + width / 2],
+            [0, height / 2, 0, y + height / 2],
+            [0, 0, 0.5, 0.5],
+            [0, 0, 0, 1]
+        ]
 
-	def glViewport(self, x, y, width, height):
-		self.vpX = int(x)
-		self.vpY = int(y)
-		self.vpWidth = width
-		self.vpHeight = height
-		
-		self.viewportMatrix = np.matrix([[width/2,0,0,x + width/2],
-										 [0,height/2,0,y + height/2],
-										 [0,0,0.5,0.5],
-										 [0,0,0,1]])
-		
+    def glProjection(self, n=0.1, f=1000, fov=60):
+        aspectRatio = self.vpWidth / self.vpHeight
+        fov = fov * pi / 180
+        t = tan(fov / 2) * n
+        r = t * aspectRatio
+        self.projectionMatrix = [
+            [n / r, 0, 0, 0],
+            [0, n / t, 0, 0],
+            [0, 0, -(f + n) / (f - n), -(2 * f * n) / (f - n)],
+            [0, 0, -1, 0]
+        ]
 
-	def glProjection(self, n = 0.1, f = 1000, fov = 60):
-		
-		aspectRatio = self.vpWidth / self.vpHeight
-		fov *= pi/180 # A radianes
-		t = tan(fov / 2) * n
-		r = t * aspectRatio
-		
-		self.projectionMatrix = np.matrix([[n/r, 0, 0, 0],
-										   [0, n/t, 0, 0],
-										   [0, 0, -(f+n)/(f-n), -(2*f*n)/(f-n)],
-										   [0, 0, -1, 0]])
-		
+    def glColor(self, r, g, b):
+        self.currColor = [min(1, max(0, r)), min(1, max(0, g)), min(1, max(0, b))]
 
-	def glColor(self, r, g, b):
-		r = min(1, max(0, r))
-		g = min(1, max(0, g))		
-		b = min(1, max(0, b))	
-		
-		self.currColor = [r,g,b]
-		
+    def glClearColor(self, r, g, b):
+        self.clearColor = [min(1, max(0, r)), min(1, max(0, g)), min(1, max(0, b))]
 
-	def glClearColor(self, r, g, b):
-		r = min(1, max(0, r))
-		g = min(1, max(0, g))		
-		b = min(1, max(0, b))	
-		
-		self.clearColor = [r,g,b]
-		
+    def glClear(self):
+        color = [int(i * 255) for i in self.clearColor]
+        self.screen.fill(color)
 
-	def glClear(self):
-		color = [int(i * 255) for i in self.clearColor]
-		self.screen.fill(color)
-		
-		self.frameBuffer = [[self.clearColor for y in range(self.height)]
-							for x in range(self.width)]
-		
-		self.zbuffer = [[float('inf') for y in range(self.height)]
-					   for x in range(self.width)]
-	
+    def loadModel(self, modelPath, texturePath):
+        model = Model(modelPath)
+        model.centerAndScale()
+        texture = Texture(texturePath)
+        self.models.append(model)
+        self.textures.append(texture)
 
-	def glPoint(self, x, y, color = None):
-		# Pygame empieza a renderizar desde la esquina
-		# superior izquierda. Hay que voltear el valor y
-		x = round(x)
-		y = round(y)
-		
-		if (0<=x<self.width) and (0<=y<self.height):
-			# Pygame recibe los colores en un rango de 0 a 255
-			color = [int(i * 255) for i in (color or self.currColor)]
-			self.screen.set_at((x, self.height - 1 - y), color)
-			
-			self.frameBuffer[x][y] = color
-	
+    def glRender(self):
+        print("Rendering frame")
+        for model, texture in zip(self.models, self.textures):
+            modelMatrix = model.GetModelMatrix()
+            viewMatrix = self.camera.GetViewMatrix()
+            projectionMatrix = self.projectionMatrix
 
-	def glLine(self, v0, v1, color = None):
-		# y = mx + b
+            for face in model.faces:
+                verts = [model.vertices[idx[0] - 1] for idx in face]
+                texCoords = [model.texcoords[idx[1] - 1] for idx in face]
+                transformedVerts = [self.vertexShader(vertex, modelMatrix=modelMatrix, viewMatrix=viewMatrix,
+                                                      projectionMatrix=projectionMatrix,
+                                                      viewportMatrix=self.viewportMatrix) for vertex in verts]
 
-		x0 = v0[0]
-		x1 = v1[0]	
-		y0 = v0[1]	
-		y1 = v1[1]
-		
-		# Algoritmo de Lineas de Bresenham
-		
-		# Si el punto 0 es igual al punto 1, solamente dibujo un punto
-		if x0 == x1 and y0 == y1:
-			self.glPoint(x0,y0)
-			return
-		
-		dy = abs(y1 - y0)
-		dx = abs(x1 - x0)
-		
-		steep = dy > dx
-		
-		if steep:
-			x0, y0 = y0, x0
-			x1, y1 = y1, x1
-			
-		if x0 > x1:
-			x0, x1 = x1, x0
-			y0, y1 = y1, y0
-			
-		dy = abs(y1 - y0)
-		dx = abs(x1 - x0)
-		
-		offset = 0
-		limit = 0.75
-		m = dy / dx
-		y = y0
-		
-		for x in range(round(x0), round(x1) + 1):
-			if steep:
-				self.glPoint(y, x, color or self.currColor)
-			else:
-				self.glPoint(x, y, color or self.currColor)
-			
-			offset += m
-			
-			if offset >= limit:
-				if y0 < y1:
-					y += 1
-				else:
-					y -= 1
-				
-				limit += 1
-			
-				
-	def glGenerateFrameBuffer(self, filename):
-		
-		with open(filename, "wb") as file:
-			# Header
-			file.write(char("B"))
-			file.write(char("M"))
-			file.write(dword(14 + 40 + (self.width * self.height * 3)))
-			file.write(dword(0))
-			file.write(dword(14 + 40))
-			
-			# Info Header
-			file.write(dword(40))
-			file.write(dword(self.width))
-			file.write(dword(self.height))
-			file.write(word(1))
-			file.write(word(24))
-			file.write(dword(0))
-			file.write(dword(self.width * self.height * 3))
-			file.write(dword(0))
-			file.write(dword(0))
-			file.write(dword(0))
-			file.write(dword(0))
-			
-			# Color table
-			for y in range(self.height):
-				for x in range(self.width):
-					color = self.frameBuffer[x][y]
-					color = bytes([color[2],
-								   color[1],
-								   color[0]])
-					
-					file.write(color)
-			
-					
-	def glRender(self):
-		
-		for model in self.models:
-			# Por cada modelo en la lista, los dibujo
-			# Agarrar su matriz modelo
-			mMat = model.GetModelMatrix()
-			
-			# Aqui vamos a guardar todos los vertices y su info correspondiente
-			vertexBuffer = [ ]
-			
-			# Para cada cara del modelo, recorremos la info de vértices de esa cara
-			for face in model.faces:
-				
-				# Aqui vamos a guardar los vertices de esta cara
-				faceVerts = []
+                if transformedVerts:
+                    self.glTriangle(transformedVerts[0], transformedVerts[1], transformedVerts[2], texture, texCoords)
 
-				for i in range(len(face)):
-					
-					# Aqui vamos a guardar los valores individuales de 
-					# posicion, coordenadas de textura y normales
-					vert = []
-					
-					# Obtenemos los vertices de la cara actual
-					pos = model.vertices[ face[i][0] - 1 ]
-					
-					# Si contamos con un Vertex Shader, se manda cada vertice
-					# para transformalos. Recordar pasar las matrices necesarias
-					# para usarlas dentro del shader
-					if self.vertexShader:
-						pos = self.vertexShader(pos,
-												modelMatrix = mMat,
-												viewMatrix = self.camera.GetViewMatrix(),
-												projectionMatrix = self.projectionMatrix,
-												viewportMatrix = self.viewportMatrix)
-						 
-					# Agregamos los valores de posicion al contenedor del vertice
-					for value in pos:
-						vert.append(value)
-						
-					# Agregamos la informacion de este vertices a la
-					# lista de vertices de esta cara
-					faceVerts.append(vert)
-					
-				# Agregamos toda la informacion de los tres vertices de
-				# esta cara de corrido al buffer de vertices. Si hay
-				# cuatro vertices, creamos un segundo triangulo
-				for value in faceVerts[0]: vertexBuffer.append(value)
-				for value in faceVerts[1]: vertexBuffer.append(value)
-				for value in faceVerts[2]: vertexBuffer.append(value)
-				if len(faceVerts) == 4:
-					for value in faceVerts[0]: vertexBuffer.append(value)
-					for value in faceVerts[2]: vertexBuffer.append(value)
-					for value in faceVerts[3]: vertexBuffer.append(value)
+    def glTriangle(self, A, B, C, texture, texCoords):
+        # Calcular la caja delimitadora del triángulo
+        bboxMin, bboxMax = self.bbox(A, B, C)
+        areaABC = (B[0] - A[0]) * (C[1] - A[1]) - (C[0] - A[0]) * (B[1] - A[1])
 
-			# Mandamos el buffer de vertices de este modelo a ser dibujado
-			self.glDrawPrimitives(vertexBuffer, 3)
-				
+        if abs(areaABC) < 1e-5:  # Verificar que el triángulo sea válido
+            return
 
-	def glTriangle(self, A, B, C):
-		
-		# Hay que asegurar que los vertices entran
-		# en orden: Ay > By > Cy
-		if A[1] < B[1]:
-			A, B = B, A
-		if A[1] < C[1]:
-			A, C = C, A
-		if B[1] < C[1]:
-			B, C = C, B
-			
-		def flatBottom(vA, vB, vC):
-			
-			try:
-				mBA = (vB[0] - vA[0]) / (vB[1] - vA[1])
-				mCA = (vC[0] - vA[0]) / (vC[1] - vA[1])
-			except:
-				pass
-			else:
-				if vB[0] > vC[0]:
-					vB, vC = vC, vB
+        # Bucle sobre cada píxel en la caja delimitadora
+        for x in range(max(0, bboxMin[0]), min(self.width, bboxMax[0] + 1)):
+            for y in range(max(0, bboxMin[1]), min(self.height, bboxMax[1] + 1)):
+                # Calcular las coordenadas baricéntricas
+                w = ((B[0] - A[0]) * (y - A[1]) - (B[1] - A[1]) * (x - A[0])) / areaABC
+                v = ((C[0] - A[0]) * (y - A[1]) - (C[1] - A[1]) * (x - A[0])) / areaABC
+                u = 1 - v - w
 
-				x0 = vB[0]
-				x1 = vC[0]
-				
-				for y in range( round(vB[1]), round(vA[1] + 1)):
-					for x in range(round(x0 - 1), round(x1 + 1)):
-						vP = [x, y]
-						self.glDrawTrianglePoint(vA, vB, vC, vP)
-						
-					x0 += mBA
-					x1 += mCA	
+                # Comprobar si el punto P está dentro del triángulo
+                if u >= 0 and v >= 0 and w >= 0:
+                    # Interpolación de coordenadas de textura
+                    tx = texCoords[0][0] * u + texCoords[1][0] * v + texCoords[2][0] * w
+                    ty = texCoords[0][1] * u + texCoords[1][1] * v + texCoords[2][1] * w
 
-		def flatTop(vA, vB, vC):
-			
-			try:
-				mCA = (vC[0] - vA[0]) / (vC[1] - vA[1])
-				mCB = (vC[0] - vB[0]) / (vC[1] - vB[1])
-			except:
-				pass
-			else:
-				if vA[0] > vB[0]:
-					vA, vB = vB, vA
-					
-				x0 = vA[0]
-				x1 = vB[0]
-				
-				for y in range( round(vA[1]), round(vC[1] - 1), -1):
-					for x in range(round(x0 - 1), round(x1 + 1)):
-						vP = [x, y]
-						self.glDrawTrianglePoint(vA, vB, vC, vP)
-						
-					x0 -= mCA
-					x1 -= mCB
-			
+                    # Normalización de las coordenadas de textura
+                    tx = max(0, min(1, tx))
+                    ty = max(0, min(1, ty))
 
+                    # Fragment Shader para calcular el color
+                    kwargs = {
+                        "verts": [A, B, C],
+                        "bCoords": (u, v, w),
+                        "texture": texture,
+                        "texCoords": texCoords
+                    }
+                    color = self.fragmentShader(**kwargs)
+                    self.glPoint(x, y, color)
 
-		if B[1] == C[1]:
-			# Si el punto B y C estan a la misma altura,
-			# se dibuja un triangulo con parte plana abajo
-			flatBottom(A, B, C)
-		
-		elif A[1] == B[1]:
-			# Si el punto A y B estan a la misma altura,
-			# se dibuja un triangulo con parte plana arriba
-			flatTop(A, B, C)
-		
-		else:
-			# Divido el triangulo en dos partes y dibujo ambos tipos de triangulos
-			# Teorema del intercepto para calcular D en X y Y
-			D = [ A[0] + ((B[1] - A[1]) / (C[1] - A[1])) * (C[0] - A[0]), B[1]]
+    def bbox(self, *vertices):
+        xs = [v[0] for v in vertices]
+        ys = [v[1] for v in vertices]
+        return [int(min(xs)), int(min(ys))], [int(max(xs)), int(max(ys))]
 
-			flatBottom(A, B, D)
-			flatTop(B, D, C)
+    def glPoint(self, x, y, color):
+        try:
+            self.screen.set_at((x, y), [int(c * 255) for c in color])
+        except:
+            pass
 
-
-	def glDrawTrianglePoint(self, A, B, C, P):
-		
-		x = P[0]
-		y = P[1]
-		
-		# Si el punto no esta dentro de la ventana, lo descartamos
-		if not (0 <= x < self.width) or not (0 <= y < self.height):
-			return
-		
-		# Obtenemos las coordenadas baricentricas del punto P
-		# en este triangulo. Si no son validas, no dibujamos
-		bCoords = barycentricCoords(A, B, C, P)
-		
-		if bCoords == None:
-			return
-		
-		u, v, w = bCoords
-
-		# Si contamos un Fragment Shader, obtener el color de ahí
-		color = self.currColor
-		
-		if self.fragmentShader != None:
-			# Mandar los parámetros necesarios al shader
-			verts = (A, B, C)
-			color = self.fragmentShader(verts = verts,
-										bCoords = bCoords,)
-
-		self.glPoint(x, y, color)
-
-
-	def glDrawPrimitives(self, buffer, vertexOffset):
-		# El buffer es un listado de valores que representan
-		# toda la informacion de un vertice (posicion, coordenadas
-		# de textura, normales, color, etc.). El VertexOffset se
-		# refiere a cada cuantos valores empieza la informacion
-		# de un vertice individual
-		# Se asume que los primeros tres valores de un vertice
-		# corresponden a Posicion.
-				
-		if self.primitiveType == POINTS:
-			
-			# Si son puntos, revisamos el buffer en saltos igual
-			# al Vertex Offset. El valor X y Y de cada vertice
-			# corresponden a los dos primeros valores.
-			for i in range(0, len(buffer), vertexOffset):
-				x = buffer[i]
-				y = buffer[i + 1]
-				self.glPoint(x, y)
-				
-		elif self.primitiveType == LINES:
-			
-			# Si son lineas, revisamos el buffer en saltos igual
-			# a 3 veces el Vertex Offset, porque cada trio corresponde
-			# a un triangulo. 
-			for i in range(0, len(buffer), vertexOffset * 3):
-				for j in range(3):
-					# Hay que dibujar la linea de un vertice al siguiente
-					x0 = buffer[ i + vertexOffset * j + 0]
-					y0 = buffer[ i + vertexOffset * j + 1]					
-					
-					# En caso de que sea el ultimo vertices, el siguiente
-					# seria el primero
-					x1 = buffer[ i + vertexOffset * ((j + 1)%3) + 0]
-					y1 = buffer[ i + vertexOffset * ((j + 1)%3) + 1]
-				
-					self.glLine( (x0, y0), (x1, y1) )
-				
-		elif self.primitiveType == TRIANGLES:
-
-			# Si son triangulos revisamos el buffer en saltos igual
-			# a 3 veces el Vertex Offset, porque cada trio corresponde
-			# a un triangulo. 
-			for i in range(0, len(buffer), vertexOffset * 3):
-				
-				# Necesitamos tres vertices para mandar a dibujar el triangulo.
-				# Cada vertice necesita todos sus datos, la cantidad de estos
-				# datos es igual a VertexOffset
-				A = [ buffer[i + j + vertexOffset * 0] for j in range(vertexOffset)]
-				B = [ buffer[i + j + vertexOffset * 1] for j in range(vertexOffset)]
-				C = [ buffer[i + j + vertexOffset * 2] for j in range(vertexOffset)]
-				
-				self.glTriangle(A, B, C)
-				
-				
-
-
-		
+    def glGenerateFrameBuffer(self, filename):
+        pass
